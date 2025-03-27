@@ -19,7 +19,7 @@ except ImportError:
 @dataclasses.dataclass
 class ImageClassifierOptions:
     enable_edgetpu: bool = False
-    max_results: int = 3
+    max_results: int = 1  # 修改為只顯示最高的結果
     num_threads: int = 1
     score_threshold: float = 0.0
     label_path: str = "labels.txt"
@@ -92,14 +92,17 @@ class ImageClassifier:
             scale, zero_point = self._output_details[0]['quantization']
             output_tensor = scale * (output_tensor - zero_point)
         
-        sorted_indices = np.argsort(output_tensor)[::-1]
-        categories = [
-            Category(label=self._label_list[idx] if idx < len(self._label_list) else "Unknown", 
-                     score=output_tensor[idx])
-            for idx in sorted_indices[:self._options.max_results]
-        ]
-        return [c for c in categories if c.score >= self._options.score_threshold]
-
+        if output_tensor.ndim == 0 or len(output_tensor) == 1:
+            # 單一值 (Sigmoid 模型)
+            score = float(output_tensor) if output_tensor.ndim == 0 else float(output_tensor[0])
+            label = self._label_list[1] if score > 0.5 else self._label_list[0]
+            return [Category(label=label, score=score)]
+        else:
+            # 多類別輸出 (Softmax 模型)
+            max_index = np.argmax(output_tensor)
+            max_score = float(output_tensor[max_index])
+            label = self._label_list[max_index] if max_index < len(self._label_list) else "Unknown"
+            return [Category(label=label, score=max_score)]
 
 def run(model: str, label_path: str, max_results: int, num_threads: int, enable_edgetpu: bool, ip: str,
         camera_id: int, width: int, height: int) -> None:
@@ -124,9 +127,9 @@ def run(model: str, label_path: str, max_results: int, num_threads: int, enable_
         image = cv2.flip(image, 1)
         categories = classifier.classify(image)
         
-        for idx, category in enumerate(categories):
+        for category in categories:
             result_text = f"{category.label} ({round(category.score, 2)})"
-            cv2.putText(image, result_text, (24, (idx + 2) * 20), cv2.FONT_HERSHEY_PLAIN, 1, (0, 0, 255), 1)
+            cv2.putText(image, result_text, (24, 40), cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 255), 2)
         
         if cv2.waitKey(1) == 27:
             break
@@ -135,12 +138,11 @@ def run(model: str, label_path: str, max_results: int, num_threads: int, enable_
     cap.release()
     cv2.destroyAllWindows()
 
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', required=True, help='TFLite 影像分類模型檔案名稱')
     parser.add_argument('--labels', required=True, help='標籤檔名稱')
-    parser.add_argument('--maxResults', type=int, default=3, help='回傳的最大分類數量')
+    parser.add_argument('--maxResults', type=int, default=1, help='回傳的最大分類數量')
     parser.add_argument('--numThreads', type=int, default=4, help='運行模型的 CPU 執行緒數量')
     parser.add_argument('--enableEdgeTPU', action='store_true', help='是否啟用 EdgeTPU 加速')
     parser.add_argument('--ip', required=True, help='攝影機 IP 地址')
